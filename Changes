@@ -1,0 +1,10 @@
+Revision history for Perl extension Plack::Middleware::Auth::OAuth
+
+0.03    Mon Oct 01 15:26:48 2012
+        - RSA-SHA1 support
+
+0.02    Tue Jun 01 19:16:36 2010
+        - verify all values for the key (thanks to: tokuhirom)
+
+0.01    Mon Apr 26 21:30:24 2010
+        - original version
