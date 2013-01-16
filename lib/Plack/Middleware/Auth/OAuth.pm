@@ -1,7 +1,7 @@
 package Plack::Middleware::Auth::OAuth;
 use strict;
 use warnings;
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 use parent qw(Plack::Middleware);
 
@@ -12,6 +12,8 @@ use Plack::Util::Accessor qw(
     validate_post
     check_timestamp_cb
     check_nonce_cb
+    unauthorized_cb
+    validate_only
 );
 
 use OAuth::Lite::Util qw(parse_auth_header);
@@ -23,19 +25,18 @@ sub prepare_app {
     die 'requires consumer_key'    unless $self->consumer_key;
     die 'requires consumer_secret' unless $self->consumer_secret;
 
-    if ($self->check_nonce_cb && ref $self->check_nonce_cb ne 'CODE') {
-        die 'check_nonce_cb should be a code reference';
+    for my $cb_method (qw/check_nonce_cb check_timestamp_cb unauthorized_cb/) {
+        if ($self->$cb_method && ref $self->$cb_method ne 'CODE') {
+            die "$cb_method should be a code reference";
+        }
     }
-    if ($self->check_timestamp_cb && ref $self->check_timestamp_cb ne 'CODE')
-    {
-        die 'check_timestamp_cb should be a code reference';
-    }
+
 }
 
 sub call {
     my ($self, $env) = @_;
 
-    return $self->validate($env) ? $self->app->($env) : $self->unauthorized;
+    return ($self->validate($env) || $self->validate_only) ? $self->app->($env) : $self->unauthorized($env);
 }
 
 sub validate {
@@ -63,7 +64,7 @@ sub validate {
     $util->support_signature_method($params->{oauth_signature_method});
     return unless $util->validate_params($params);
 
-    return $util->verify_signature(
+    $env->{'psgix.oauth_authorized'} = $util->verify_signature(
         method          => $req->method,
         url             => $req->uri,
         params          => $params,
@@ -73,17 +74,22 @@ sub validate {
 }
 
 sub unauthorized {
-    my $self = shift;
+    my ($self, $env) = @_;
 
-    my $body = 'Authorization required';
-    return [
-        401,
-        [
-            'Content-Type'    => 'text/plain',
-            'Content-Lentgth' => length $body,
-        ],
-        [$body],
-    ];
+    if ($self->unauthorized_cb) {
+        $self->unauthorized_cb->($env);
+    }
+    else {
+        my $body = 'Authorization required';
+        return [
+            401,
+            [
+                'Content-Type'    => 'text/plain',
+                'Content-Lentgth' => length $body,
+            ],
+            [$body],
+        ];
+    }
 }
 1;
 __END__
@@ -102,8 +108,9 @@ Plack::Middleware::Auth::OAuth - OAuth signature validation middleware
       enable "Plack::Middleware::Auth::OAuth",
           consumer_key => 'YOUR_CONSUMER_KEY',
           consumer_secret => 'YOUR_CONSUMER_SECRET',
+          validate_post   => 1,
           ;
-      $app; 
+      $app;
   };
 
 =head1 DESCRIPTION
@@ -124,16 +131,26 @@ Your application's consumer secret.
 
 =item validate_post
 
-Includes body parameters in validation.  For MBGA-Town, you should use this 
+Includes body parameters in validation.  For MBGA-Town, you should use this
 option.
 
-=item check_nonce_cb 
+=item check_nonce_cb
 
 A callback function to validate oauth_nonce.
 
-=item check_timestamp_cb 
+=item check_timestamp_cb
 
 A callback function to validate oauth_timestamp.
+
+=item unauthorized_cb
+
+A callback function (psgi application) for returning custom response when unauthorized.
+
+=item validate_only
+
+doing only validation. not returning response directly from middleware (unauthorized method not to be called).
+
+discriminating authorization is valid or not by seeing $env->{'psgix.oauth_authorized'} in your app.
 
 =back
 
