@@ -3,9 +3,12 @@ use warnings;
 
 use Test::More;
 use Plack::Test;
-use Plack::Builder;
+use Plack::Middleware::Auth::OAuth;
 use HTTP::Request::Common;
 use OAuth::Lite::Consumer;
+use Data::Dumper;
+local $Data::Dumper::Terse  = 1;
+local $Data::Dumper::Purity = 1;
 
 my $public_key = <<__END_OF_PUBLIC__;
 -----BEGIN RSA PUBLIC KEY-----
@@ -64,18 +67,23 @@ my $consumer = OAuth::Lite::Consumer->new(
     _timestamp      => $args{timestamp},
 );
 
-{
-    my $app = sub {
-        return [200, ['Content-Type' => 'text/plain'], ['Hello World']];
-    };
 
-    $app = builder {
-        enable 'Plack::Middleware::Auth::OAuth',
-            'consumer_secret'   => $public_key,
-            'consumer_key'      => $args{consumer_key},
-            ;
-        $app;
-    };
+my $app_base = sub {
+    my $env = shift;
+
+    my %env_sub =
+        map  {($_ => $env->{$_})}
+        grep {/^psgix\.oauth/}
+        keys %{$env};
+
+    return [200, ['Content-Type' => 'text/plain'], [Dumper \%env_sub]];
+};
+
+subtest normal => sub {
+    my $app = Plack::Middleware::Auth::OAuth->wrap($app_base,
+        consumer_secret => $public_key,
+        consumer_key    => $args{consumer_key},
+    );
 
     test_psgi $app, sub {
         my $cb = shift;
@@ -90,22 +98,20 @@ my $consumer = OAuth::Lite::Consumer->new(
         );
         $res = $cb->($req);
         is $res->code,    200;
-        is $res->content, "Hello World";
-    };
-}
+        my $env_sub = eval $res->content;
+        ok defined $env_sub->{'psgix.oauth_realm'};
+        ok $env_sub->{'psgix.oauth_params'};
+        is $env_sub->{'psgix.oauth_params'}{oauth_consumer_key}, $params{oauth_consumer_key};
 
-{
-    my $app = sub {
-        return [200, ['Content-Type' => 'text/plain'], ['Hello World']];
+        ok $env_sub->{'psgix.oauth_authorized'};
     };
+};
 
-    $app = builder {
-        enable 'Plack::Middleware::Auth::OAuth',
-            'consumer_secret'   => $invalid_public_key,
-            'consumer_key'      => $args{consumer_key},
-            ;
-        $app;
-    };
+subtest invalid => sub {
+    my $app = Plack::Middleware::Auth::OAuth->wrap($app_base,
+        consumer_secret => $invalid_public_key,
+        consumer_key    => $args{consumer_key},
+    );
 
     test_psgi $app, sub {
         my $cb = shift;
@@ -119,9 +125,9 @@ my $consumer = OAuth::Lite::Consumer->new(
             params => \%params,
         );
         $res = $cb->($req);
-        is $res->code,    401;
+        is $res->code, 401;
     };
-}
+};
 
 done_testing;
 
